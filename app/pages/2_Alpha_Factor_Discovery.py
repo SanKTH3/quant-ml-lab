@@ -73,6 +73,15 @@ The future return is used only as the target for evaluation. It is not used as a
 """
     )
 
+current_config = {
+    "source": source,
+    "ticker": ticker,
+    "period": period,
+    "interval": interval,
+    "horizon": horizon,
+    "selected_factors": tuple(selected_factors),
+}    
+
 if run:
     if not selected_factors:
         st.warning("Choose at least one candidate factor.")
@@ -92,99 +101,156 @@ if run:
                 )
             )
             feature_df = build_features(ohlcv)
-            result = evaluate_factors(feature_df, horizon=horizon, factor_columns=selected_factors)
+            result = evaluate_factors(
+                feature_df,
+                horizon=horizon,
+                factor_columns=selected_factors,
+            )
 
-        section_title("Factor ranking")
-        st.markdown(
-            """
+        st.session_state["alpha_analysis"] = {
+            "result": result,
+            "chart_title": chart_title,
+            "config": current_config,
+        }
+
+    except Exception as exc:
+        st.error(str(exc))
+        st.info(
+            "Try Synthetic demo first. For Yahoo Finance, make sure yfinance is installed "
+            "and you have internet access."
+        )
+
+if "alpha_analysis" in st.session_state:
+    analysis = st.session_state["alpha_analysis"]
+    result = analysis["result"]
+    chart_title = analysis["chart_title"]
+    saved_config = analysis["config"]
+
+    if saved_config != current_config:
+        st.warning(
+            "The sidebar settings have changed. Click **Run factor discovery** again "
+            "to recompute the analysis with the new settings."
+        )
+
+    section_title("Factor ranking")
+    st.markdown(
+        """
 `IC` is the correlation between today's factor value and the selected future return.
 `Rank IC` is the same idea using ranked values, which can be more robust for noisy data.
 """
+    )
+    st.dataframe(result.ranking.style.format(precision=4), use_container_width=True)
+
+    best_factor = result.ranking.iloc[0]["factor"]
+
+    chosen_factor = st.selectbox(
+        "Choose factor to inspect",
+        result.ranking["factor"].tolist(),
+        index=0,
+    )
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        section_title("Quantile performance")
+        quantiles = quantile_performance(
+            result.data,
+            factor=chosen_factor,
+            target_column=result.target_column,
+            n_quantiles=selected_quantiles,
         )
-        st.dataframe(result.ranking.style.format(precision=4), use_container_width=True)
 
-        best_factor = result.ranking.iloc[0]["factor"]
-        chosen_factor = st.selectbox(
-            "Choose factor to inspect",
-            result.ranking["factor"].tolist(),
-            index=0,
+        fig_q = go.Figure()
+        fig_q.add_bar(
+            x=quantiles["quantile"].astype(str),
+            y=quantiles["avg_future_return"],
+            name="Average future return",
         )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            section_title("Quantile performance")
-            quantiles = quantile_performance(
-                result.data,
-                factor=chosen_factor,
-                target_column=result.target_column,
-                n_quantiles=selected_quantiles,
-            )
-            fig_q = go.Figure()
-            fig_q.add_bar(
-                x=quantiles["quantile"].astype(str),
-                y=quantiles["avg_future_return"],
-                name="Average future return",
-            )
-            fig_q.update_layout(
-                height=420,
-                title=f"{chosen_factor} vs {result.target_column}",
-                xaxis_title="Factor quantile",
-                yaxis_title="Average future return",
-                margin=dict(l=30, r=20, t=60, b=40),
-            )
-            st.plotly_chart(fig_q, use_container_width=True)
-            st.dataframe(quantiles.style.format(precision=4), use_container_width=True)
-
-        with c2:
-            section_title("Factor vs future return")
-            fig_s = go.Figure()
-            fig_s.add_trace(
-                go.Scatter(
-                    x=result.data[chosen_factor],
-                    y=result.data[result.target_column],
-                    mode="markers",
-                    name="Rows",
-                    opacity=0.55,
-                )
-            )
-            fig_s.update_layout(
-                height=420,
-                title=f"{chosen_factor} scatter",
-                xaxis_title=chosen_factor,
-                yaxis_title=result.target_column,
-                margin=dict(l=30, r=20, t=60, b=40),
-            )
-            st.plotly_chart(fig_s, use_container_width=True)
-            st.caption("A clear factor is rare in finance. Most relationships are noisy, so this chart is mainly used to inspect whether a pattern exists at all.")
-
-        section_title("Simple factor backtest")
-        strategy_df = build_factor_strategy(result.data, factor=chosen_factor, target_column=result.target_column)
-        metrics = factor_strategy_metrics(strategy_df)
-
-        fig_bt = go.Figure()
-        fig_bt.add_trace(go.Scatter(x=strategy_df.index, y=strategy_df["benchmark_equity"], mode="lines", name="Buy & Hold"))
-        fig_bt.add_trace(go.Scatter(x=strategy_df.index, y=strategy_df["factor_strategy_equity"], mode="lines", name="Factor Strategy"))
-        fig_bt.update_layout(
-            height=480,
-            title=f"{chart_title}: simple strategy using {chosen_factor}",
-            xaxis_title="Date",
-            yaxis_title="Equity curve",
-            hovermode="x unified",
-            legend_orientation="h",
+        fig_q.update_layout(
+            height=420,
+            title=f"{chosen_factor} vs {result.target_column}",
+            xaxis_title="Factor quantile",
+            yaxis_title="Average future return",
             margin=dict(l=30, r=20, t=60, b=40),
         )
-        st.plotly_chart(fig_bt, use_container_width=True)
-        st.dataframe(metrics.style.format(precision=4), use_container_width=True)
+        st.plotly_chart(fig_q, use_container_width=True)
+        st.dataframe(quantiles.style.format(precision=4), use_container_width=True)
 
-        section_title("Latest rows")
-        display_cols = ["Close", *selected_factors, result.target_column]
-        display_cols = [c for c in display_cols if c in result.data.columns]
-        st.dataframe(result.data[display_cols].tail(25), use_container_width=True)
+    with c2:
+        section_title("Factor vs future return")
 
-        section_title("Column guide")
-        st.markdown(
-            f"""
-- `{result.target_column}`: the return from today's close to the close {horizon} rows in the future. This is the target used to evaluate factors.
+        fig_s = go.Figure()
+        fig_s.add_trace(
+            go.Scatter(
+                x=result.data[chosen_factor],
+                y=result.data[result.target_column],
+                mode="markers",
+                name="Rows",
+                opacity=0.55,
+            )
+        )
+        fig_s.update_layout(
+            height=420,
+            title=f"{chosen_factor} scatter",
+            xaxis_title=chosen_factor,
+            yaxis_title=result.target_column,
+            margin=dict(l=30, r=20, t=60, b=40),
+        )
+        st.plotly_chart(fig_s, use_container_width=True)
+        st.caption(
+            "A clear factor is rare in finance. Most relationships are noisy, "
+            "so this chart is mainly used to inspect whether a pattern exists at all."
+        )
+
+    section_title("Simple factor backtest")
+
+    strategy_df = build_factor_strategy(
+        result.data,
+        factor=chosen_factor,
+        target_column=result.target_column,
+    )
+    metrics = factor_strategy_metrics(strategy_df)
+
+    fig_bt = go.Figure()
+    fig_bt.add_trace(
+        go.Scatter(
+            x=strategy_df.index,
+            y=strategy_df["benchmark_equity"],
+            mode="lines",
+            name="Buy & Hold",
+        )
+    )
+    fig_bt.add_trace(
+        go.Scatter(
+            x=strategy_df.index,
+            y=strategy_df["factor_strategy_equity"],
+            mode="lines",
+            name="Factor Strategy",
+        )
+    )
+    fig_bt.update_layout(
+        height=480,
+        title=f"{chart_title}: simple strategy using {chosen_factor}",
+        xaxis_title="Date",
+        yaxis_title="Equity curve",
+        hovermode="x unified",
+        legend_orientation="h",
+        margin=dict(l=30, r=20, t=60, b=40),
+    )
+    st.plotly_chart(fig_bt, use_container_width=True)
+    st.dataframe(metrics.style.format(precision=4), use_container_width=True)
+
+    section_title("Latest rows")
+
+    display_cols = ["Close", *saved_config["selected_factors"], result.target_column]
+    display_cols = [c for c in display_cols if c in result.data.columns]
+
+    st.dataframe(result.data[display_cols].tail(25), use_container_width=True)
+
+    section_title("Column guide")
+    st.markdown(
+        f"""
+- `{result.target_column}`: the return from today's close to the close {saved_config["horizon"]} rows in the future. This is the target used to evaluate factors.
 - `IC`: Pearson correlation between the factor and the future return target.
 - `Rank IC`: Spearman rank correlation between the factor and the future return target.
 - `hit_rate`: how often the factor's direction agreed with the sign of the future return.
@@ -194,10 +260,10 @@ if run:
 
 Best factor in this run by absolute Rank IC: **{best_factor}**.
 """
-        )
+    )
 
-    except Exception as exc:
-        st.error(str(exc))
-        st.info("Try Synthetic demo first. For Yahoo Finance, make sure yfinance is installed and you have internet access.")
 else:
-    st.info("Choose options in the sidebar and click **Run factor discovery**. Start with Synthetic demo + 5-day horizon if you want a no-internet test.")
+    st.info(
+        "Choose options in the sidebar and click **Run factor discovery**. "
+        "Start with Synthetic demo + 5-day horizon if you want a no-internet test."
+    )

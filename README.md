@@ -349,7 +349,7 @@ pip install -r requirements.txt
 Start the Streamlit dashboard:
 
 ```bash
-streamlit run app/streamlit_app.py
+streamlit run app/Main_page.py
 ```
 
 Then open the local URL shown in the terminal.
