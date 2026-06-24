@@ -38,6 +38,7 @@ class FactorDiscoveryResult:
 
 
 def add_future_return_target(feature_df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
+    """Add a future return target used for alpha factor testing."""
     if horizon < 1:
         raise ValueError("horizon must be at least 1")
 
@@ -55,15 +56,19 @@ def add_future_return_target(feature_df: pd.DataFrame, horizon: int = 5) -> pd.D
 
 def _pearson(x: pd.Series, y: pd.Series) -> float:
     valid = pd.concat([x, y], axis=1).dropna()
+
     if len(valid) < 3:
         return np.nan
+
     return float(valid.iloc[:, 0].corr(valid.iloc[:, 1], method="pearson"))
 
 
 def _spearman(x: pd.Series, y: pd.Series) -> float:
     valid = pd.concat([x, y], axis=1).dropna()
+
     if len(valid) < 3:
         return np.nan
+
     return float(valid.iloc[:, 0].corr(valid.iloc[:, 1], method="spearman"))
 
 
@@ -72,6 +77,7 @@ def _rank_factors(
     target_column: str,
     factor_columns: list[str],
 ) -> pd.DataFrame:
+    """Rank factors by relationship with future returns."""
     rows = []
     y = data[target_column]
 
@@ -88,6 +94,8 @@ def _rank_factors(
         actual_positive = y > 0
         hit_rate = float((predicted_positive == actual_positive).mean())
 
+        observations = int(pd.concat([x, y], axis=1).dropna().shape[0])
+
         rows.append(
             {
                 "factor": factor,
@@ -97,7 +105,7 @@ def _rank_factors(
                 "hit_rate": hit_rate,
                 "avg_future_return": float(y.mean()),
                 "direction": "higher is better" if direction_value > 0 else "lower is better",
-                "observations": int(pd.concat([x, y], axis=1).dropna().shape[0]),
+                "observations": observations,
             }
         )
 
@@ -114,6 +122,7 @@ def evaluate_factors(
     factor_columns: Optional[Iterable[str]] = None,
     train_fraction: float = 0.70,
 ) -> FactorDiscoveryResult:
+    """Evaluate alpha factors with train/test validation."""
     if not 0.5 <= train_fraction <= 0.9:
         raise ValueError("train_fraction must be between 0.5 and 0.9")
 
@@ -121,6 +130,7 @@ def evaluate_factors(
     target = f"future_return_{horizon}d"
 
     factors = [c for c in (factor_columns or DEFAULT_FACTOR_COLUMNS) if c in df.columns]
+
     if not factors:
         raise ValueError("No valid factor columns were found in the feature dataframe.")
 
@@ -162,6 +172,7 @@ def quantile_performance(
     target_column: str,
     n_quantiles: int = 5,
 ) -> pd.DataFrame:
+    """Group rows by factor value and calculate future return per bucket."""
     if factor not in data.columns:
         raise ValueError(f"Unknown factor: {factor}")
 
@@ -169,6 +180,7 @@ def quantile_performance(
         raise ValueError(f"Unknown target column: {target_column}")
 
     tmp = data[[factor, target_column]].dropna().copy()
+
     unique_values = tmp[factor].nunique()
     q = min(n_quantiles, unique_values)
 
@@ -194,12 +206,62 @@ def quantile_performance(
 
 
 def get_factor_direction(ranking: pd.DataFrame, factor: str) -> str:
+    """Get the factor direction from a ranking table."""
     row = ranking.loc[ranking["factor"] == factor]
 
     if row.empty:
         raise ValueError(f"Factor {factor} was not found in the ranking table.")
 
     return str(row.iloc[0]["direction"])
+
+
+def factor_ranking_by_regime(
+    data: pd.DataFrame,
+    target_column: str,
+    factor_columns: list[str],
+    regime_column: str = "regime",
+    min_rows: int = 20,
+) -> pd.DataFrame:
+    """Rank alpha factors separately inside each detected market regime."""
+    if regime_column not in data.columns:
+        raise ValueError(f"Regime column '{regime_column}' was not found in the dataframe.")
+
+    rows = []
+
+    for regime_name, regime_df in data.groupby(regime_column):
+        valid_factors = [c for c in factor_columns if c in regime_df.columns]
+
+        if len(regime_df) < min_rows or not valid_factors:
+            continue
+
+        ranking = _rank_factors(
+            data=regime_df,
+            target_column=target_column,
+            factor_columns=valid_factors,
+        )
+
+        ranking.insert(0, "regime", regime_name)
+        ranking.insert(1, "regime_rows", len(regime_df))
+
+        rows.append(ranking)
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "regime",
+                "regime_rows",
+                "factor",
+                "ic",
+                "rank_ic",
+                "abs_rank_ic",
+                "hit_rate",
+                "avg_future_return",
+                "direction",
+                "observations",
+            ]
+        )
+
+    return pd.concat(rows, ignore_index=True)
 
 
 def build_factor_strategy(
@@ -210,6 +272,7 @@ def build_factor_strategy(
     direction: Optional[str] = None,
     threshold_data: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
+    """Create a simple long/cash factor strategy."""
     if not 0.5 < top_quantile < 1.0:
         raise ValueError("top_quantile must be between 0.5 and 1.0")
 
@@ -246,6 +309,7 @@ def factor_strategy_metrics(
     strategy_df: pd.DataFrame,
     periods_per_year: int = 252,
 ) -> pd.DataFrame:
+    """Calculate basic metrics for buy-and-hold and the factor strategy."""
     rows = []
 
     for name, col in [
